@@ -1,13 +1,14 @@
 package bot
 
 import (
-	"flag"
 	"github.com/bwmarrin/discordgo"
+	"github.com/joho/godotenv"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 	"math/rand"
+	"regexp"
 )
 
 var dg *discordgo.Session
@@ -20,8 +21,20 @@ var commands = []*discordgo.ApplicationCommand{
 			{
 				Type:        discordgo.ApplicationCommandOptionString,
 				Name:        "choice",
-				Description: "Heads or Tails",
+				Description: "Choice to make",
 				Required:    false,
+			},
+		},
+	},
+	{
+		Name: "choice",
+		Description: "Make a choice",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "choices",
+				Description: "Choices to choose from",
+				Required:    true,
 			},
 		},
 	},
@@ -29,18 +42,21 @@ var commands = []*discordgo.ApplicationCommand{
 
 var commandHandlers = map[string]func(s *discordgo.Session, i *discordgo.InteractionCreate){
 	"coinflip": coinflip,
+	"choice": choice,
 }
 
-var (
-	guildId = flag.String("g", "", "Guild ID")
-	token = flag.String("t", "", "Bot Token")
-)
+var guildId string
+var token string
+var optionRegex = regexp.MustCompile(`"([^"]|\\")+"|(\\"|[^" \n\t])+`)
 
 func init() {
-	flag.Parse()
+	godotenv.Load()
+
+	guildId = os.Getenv("GUILD_ID")
+	token = os.Getenv("BOT_TOKEN")
 
 	var err error
-	dg, err = discordgo.New("Bot " + *token)
+	dg, err = discordgo.New("Bot " + token)
 
 	if err != nil {
 		fmt.Println("error creating Discord session,", err)
@@ -64,18 +80,28 @@ func Run() error {
 		return err
 	}
 
-	for _, command := range commands {
-		_, err := dg.ApplicationCommandCreate(dg.State.User.ID, *guildId, command)
+	registeredCommands := make([]*discordgo.ApplicationCommand, len(commands))
+	for i, command := range commands {
+		_, err := dg.ApplicationCommandCreate(dg.State.User.ID, guildId, command)
 		if err != nil {
 			fmt.Println("error creating command,", err)
+		} else {
+			registeredCommands[i] = command
 		}
 	}
-	
+
 	fmt.Println("Bot is now running.  Press CTRL-C to exit.")
 
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
 	<-sc
+
+	for _, command := range registeredCommands {
+		err := dg.ApplicationCommandDelete(dg.State.User.ID, command.GuildID, command.ID)
+		if err != nil {
+			fmt.Println("error deleting command,", err)
+		}
+	}
 
 	// Cleanly close down the Discord session.
 	dg.Close()
@@ -118,4 +144,22 @@ func coinflip(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			},
 		})
 	}
+}
+
+func choice(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	options := i.ApplicationCommandData().Options
+	choices := optionRegex.FindAllString(options[0].StringValue(), -1)
+	choice := rand.Intn(len(choices))
+	content := choices[choice]
+
+	if content[0] == '"' {
+		content = content[1:len(content)-1]
+	}
+
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content: content,
+		},
+	})
 }
